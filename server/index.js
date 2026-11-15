@@ -29,11 +29,9 @@ const PROVIDERS = {
     key: process.env.GROQ_API_KEY?.trim(),
     call: callGroq,
     models: {
-      recipe: list(process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', process.env.GROQ_FALLBACK_MODELS ?? 'llama-3.1-8b-instant'),
-      scan: list(
-        process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
-        process.env.GROQ_VISION_FALLBACK_MODELS ?? 'meta-llama/llama-4-maverick-17b-128e-instruct',
-      ),
+      // Checked against Groq's live model list (GET /openai/v1/models).
+      recipe: list(process.env.GROQ_MODEL || 'openai/gpt-oss-120b', process.env.GROQ_FALLBACK_MODELS ?? 'qwen/qwen3.8-27b,openai/gpt-oss-20b'),
+      scan: list(process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b', process.env.GROQ_VISION_FALLBACK_MODELS ?? ''),
     },
   },
   gemini: {

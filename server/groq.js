@@ -4,6 +4,12 @@ import { ApiError } from './errors.js';
 
 const API_URL = process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
 
+// Groq's current models (gpt-oss, Qwen) "reason" before answering. Low effort
+// is plenty for a recipe and keeps responses around 1-2s. Models that reject
+// the parameter are remembered and called without it.
+const REASONING_EFFORT = process.env.GROQ_REASONING_EFFORT ?? 'low';
+const rejectsReasoningEffort = new Set();
+
 /**
  * @param {object} opts
  * @param {string} opts.apiKey
@@ -14,7 +20,19 @@ const API_URL = process.env.GROQ_API_URL || 'https://api.groq.com/openai/v1/chat
  * @param {number} [opts.temperature]
  * @param {AbortSignal} opts.signal
  */
-export async function callGroq({ apiKey, model, systemInstruction, parts, schema, temperature = 0.7, signal }) {
+export async function callGroq(opts) {
+  const useEffort = Boolean(REASONING_EFFORT) && !rejectsReasoningEffort.has(opts.model);
+  try {
+    return await requestGroq(opts, useEffort);
+  } catch (err) {
+    if (err.code !== 'REASONING_UNSUPPORTED') throw err;
+    rejectsReasoningEffort.add(opts.model);
+    console.warn(`[api] ${opts.model} rejected reasoning_effort; retrying without it`);
+    return requestGroq(opts, false);
+  }
+}
+
+async function requestGroq({ apiKey, model, systemInstruction, parts, schema, temperature = 0.7, signal }, useEffort) {
   const hasImage = parts.some((p) => p.inlineData);
   const content = hasImage
     ? parts.map((p) =>
@@ -27,7 +45,8 @@ export async function callGroq({ apiKey, model, systemInstruction, parts, schema
   const body = {
     model,
     temperature,
-    max_completion_tokens: 4096,
+    max_completion_tokens: 8192, // includes reasoning tokens
+    ...(useEffort ? { reasoning_effort: REASONING_EFFORT } : {}),
     // JSON mode guarantees syntactically valid JSON (or a 400), but NOT the
     // shape — so the schema goes in the prompt and the client validates.
     response_format: { type: 'json_object' },
@@ -70,6 +89,10 @@ export async function callGroq({ apiKey, model, systemInstruction, parts, schema
 
 function toApiError(status, e) {
   const msg = e.message || `HTTP ${status}`;
+  if (status === 400 && /reasoning/i.test(msg)) return new ApiError(400, 'REASONING_UNSUPPORTED', msg);
+  if (status === 400 && /content must be a string|image|vision/i.test(msg)) {
+    return new ApiError(500, 'MODEL_NOT_FOUND', `Model can't read images: ${msg}`); // lets the fallback chain try the next model
+  }
   if (status === 429) return new ApiError(429, 'RATE_LIMITED', msg, { retryable: true });
   if (status === 401 || status === 403) return new ApiError(500, 'CONFIG', `Groq rejected the API key: ${msg}`);
   if (status === 404 || e.code === 'model_not_found' || e.code === 'model_decommissioned') {

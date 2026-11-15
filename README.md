@@ -2,7 +2,7 @@
 
 Type (or **photograph**) what's in your fridge and get back a recipe you can **use**, not just read: check off steps as you cook, scale servings, swap ingredients you don't have, and tweak the recipe with follow-up requests ("make it vegetarian") without starting over.
 
-The AI (Llama models on **Groq**, or Google Gemini; both supported) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
+The AI (open models on **Groq**: gpt-oss-120b for recipes, Qwen 3.8 for photos; Google Gemini also supported) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
 
 > 🌐 Live: _add Render URL here_ · 📹 Demo video: _add link here_
 
