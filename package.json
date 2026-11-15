@@ -1,0 +1,28 @@
+{
+  "name": "fridge-to-fork",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Turn the ingredients in your fridge into an interactive recipe, using an LLM that returns structured JSON.",
+  "scripts": {
+    "start": "concurrently -k -n api,web -c blue,green \"node server/index.js\" \"vite\"",
+    "dev": "npm start",
+    "build": "vite build",
+    "serve": "node server/index.js --serve-static",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "jsdom": "^29.1.1",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}
