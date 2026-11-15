@@ -4,7 +4,7 @@ Type (or **photograph**) what's in your fridge and get back a recipe you can **u
 
 The AI (open models on **Groq**: gpt-oss-120b for recipes, Qwen 3.8 for photos; Google Gemini also supported) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
 
-> 🌐 **Live: <https://flam-project-bec5.onrender.com/>** (free Render instance: the first load after ~15 min idle takes 30–60s to wake up) · 📹 Demo video: _add link here_
+> 🌐 **Live: <https://flam-project-bec5.onrender.com/>** (free Render instance: the first load after ~15 min idle takes 30–60s to wake up) · 📹 **[Demo video](https://drive.google.com/file/d/1-5zuCh6MBm8SKhZ7SKhb-r5RC9FUcsJo/view?usp=sharing)**
 
 ---
 
