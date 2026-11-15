@@ -2,7 +2,7 @@
 
 Type (or **photograph**) what's in your fridge and get back a recipe you can **use**, not just read: check off steps as you cook, scale servings, swap ingredients you don't have, and tweak the recipe with follow-up requests ("make it vegetarian") without starting over.
 
-The AI (Google Gemini) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
+The AI (Llama models on **Groq**, or Google Gemini; both supported) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
 
 > 🌐 Live: _add Render URL here_ · 📹 Demo video: _add link here_
 
@@ -14,11 +14,11 @@ Requires Node 18+ (developed on Node 22).
 
 ```bash
 npm install
-cp .env.example .env        # then paste your key into GEMINI_API_KEY
+cp .env.example .env        # then paste your key into GROQ_API_KEY
 npm start                   # API on :8787 + Vite on :5173 → open http://localhost:5173
 ```
 
-Get a free Gemini key at <https://aistudio.google.com/apikey>.
+Get a free Groq key at <https://console.groq.com/keys> (or set `GEMINI_API_KEY` instead to use Gemini). The provider is picked automatically from whichever key is set.
 
 **No key?** Run `MOCK_LLM=1 npm start` (PowerShell: `$env:MOCK_LLM=1; npm start`) to get a canned recipe. Every UI path still works.
 
@@ -29,7 +29,7 @@ Get a free Gemini key at <https://aistudio.google.com/apikey>.
 | `npm run build` | Production build into `dist/`                                       |
 | `npm run serve` | Serve `dist/` + API from one Express process on :8787 (fault injection off) |
 
-Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_FALLBACK_MODELS` (default `gemini-flash-lite-latest`), `GEMINI_ATTEMPT_TIMEOUT_MS` (25000), `GEMINI_TIMEOUT_MS` (50000), `PORT`. See `.env.example`.
+Models, fallbacks and timeouts are configurable. See `.env.example`.
 
 ## Usage
 
@@ -48,7 +48,8 @@ Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_FALLB
 ## Architecture
 
 ```
-browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini generateContent
+browser ──POST /api/recipe──▶ Express (server/) ──▶ Groq chat completions (JSON mode)
+                                                      or Gemini generateContent
         ──POST /api/scan────▶   (photo, base64)
    ▲                             holds API key,         (JSON mode + responseSchema)
    │                             validates input,
@@ -58,9 +59,10 @@ browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini gener
 ```
 
 **Server (`server/`)**: a thin proxy whose main job is keeping the key out of the browser.
-- `index.js`: both AI routes share one `aiRoute()` handler. It validates the request body (length limits, servings 1–12, diet whitelist; for photos: JPEG/PNG/WebP only, valid base64, size cap) and enforces a 45s timeout. It **aborts the Gemini call if the browser disconnects**. Every failure returns a JSON `{ error: { code, message, retryable } }` (never an HTML stack trace).
+- `index.js`: both AI routes share one `aiRoute()` handler. It validates the request body (length limits, servings 1–12, diet whitelist; for photos: JPEG/PNG/WebP only, valid base64, size cap) and enforces a 50s timeout. It **aborts the model call if the browser disconnects**. Every failure returns a JSON `{ error: { code, message, retryable } }` (never an HTML stack trace).
 - `fallback.js`: **model fallback chain.** If the main model is overloaded (503 "high demand"), rate-limited, erroring, or slower than 25s, the same request is retried on `gemini-flash-lite-latest`. That model has separate capacity and its own free-tier quota, all within one 50s budget. Content problems (safety blocks, bad input) don't trigger a fallback, because another model wouldn't fix them.
 - `rateLimit.js`: per-IP limit (40 model calls / 10 min by default in production), so a public deploy can't drain the API key's quota.
+- `groq.js` / `gemini.js`: two interchangeable provider clients with the same contract (`{ text, finishReason }` or a typed error). `index.js` picks one from whichever API key is set. **Why two:** Gemini's free tier was overloaded and timing out during development (45s+), so I switched to Groq (1–3s) without touching the client. On Groq, JSON mode guarantees *syntax* but not *shape*, so the schema is sent in the prompt and the client validates as always. When Groq itself rejects invalid JSON (`json_validate_failed`), the raw attempt is passed through so the client can salvage it or auto-retry.
 - `gemini.js`: one generic `callGemini()` doing a single `fetch` to the Gemini REST API, with no SDK, so each failure is visible. Text and image parts go in the same request. It asks for no "thinking" (`thinkingBudget: 0`), which cuts latency a lot for this task. If a model refuses that setting, it retries without it and remembers that for the model. It maps HTTP 429/4xx/5xx, safety blocks (`promptFeedback.blockReason`, `finishReason: SAFETY`), and the API envelope to typed errors. It returns the raw model text plus `finishReason`.
 - `prompt.js`: system instructions plus `responseSchema`s for recipes and photo scans. User text is wrapped in `<user_ingredients>` tags and treated as data. The scan prompt also says to ignore any instructions written *in the photo* (e.g. on a label or note).
 - `faults.js`: dev-only fault injection (see below).
@@ -141,7 +143,7 @@ To see the race protection, submit, then edit the ingredients and submit again b
 - **Checkmarks reset when a refinement is applied.** Ids are positional, so after the AI restructures the recipe, old checkmarks could point at the wrong step. Servings are kept.
 - **Refinement sends the whole recipe back** to the model (fine at this size; could use a JSON-patch style edit for larger docs).
 - **Quantities are only as good as the model's.** Unit conversion (cups ↔ grams) isn't attempted, and "to taste" items don't scale.
-- **Free-tier Gemini is sometimes overloaded.** The fallback model absorbs most of this, but if Google's whole Flash family is busy, users see "The AI is very busy right now" and can retry. The real fix is a paid key (Tier 1 is cheap). Using several free keys to multiply quota isn't a fix: limits are per Google Cloud project, and getting around them breaks Google's terms.
+- **Free tiers get overloaded.** Gemini's free tier timed out regularly during development, which is why Groq is the default now. On either provider, the fallback model absorbs most of this, but if every model is busy, users see "The AI is very busy right now" and can retry. The real fix is a paid key (Tier 1 is cheap). Using several free keys to multiply quota isn't a fix: limits are per account/project, and getting around them breaks the providers' terms.
 - **Rate limiting is in-memory**, so it resets on restart and isn't shared across multiple instances (fine for one free Render instance; Redis would be needed beyond that).
 - **One photo at a time.** Scan again to add more. Photos aren't kept in saved sessions.
 - **Sessions are per-browser** (localStorage), capped at 20.
@@ -164,7 +166,7 @@ The repo includes a `render.yaml` blueprint: one free Node web service that runs
 
 1. Push this repo to GitHub.
 2. On [render.com](https://render.com): **New → Blueprint**, then pick the repo.
-3. When prompted, paste your **GEMINI_API_KEY**, then **Apply**.
+3. When prompted, paste your **GROQ_API_KEY**, then **Apply**.
 4. Wait for the build, then open the `https://<name>.onrender.com` URL. `/api/health` should show `"keyConfigured": true`.
 
 In production mode, fault injection is disabled and per-IP rate limiting is on. On the free plan the service sleeps after ~15 minutes idle, so the first visit afterwards takes ~30–60s to wake up. Every push to `main` redeploys automatically.
@@ -175,7 +177,7 @@ _Edit this section so it accurately describes how you worked._
 
 - **Claude Code (Anthropic)** was used to scaffold the project and write most of the initial code: the Express proxy, the parsing/validation layer, the request hook, components, CSS, tests, and this README.
 - I chose the project and provider, reviewed the code, ran the tests and the app, and checked each failure scenario with the fault-injection panel.
-- **SDKs**: none. Gemini is called with plain `fetch`, and structured output comes from Gemini's `responseMimeType: application/json` + `responseSchema`. That schema constrains generation but isn't trusted: everything is re-validated client-side.
+- **SDKs**: none. Groq and Gemini are both called with plain `fetch`. Structured output comes from Groq's JSON mode (schema in the prompt) or Gemini's `responseSchema`. Neither is trusted: everything is re-validated client-side.
 
 ## Time spent
 

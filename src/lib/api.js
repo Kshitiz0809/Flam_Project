@@ -2,7 +2,7 @@
 // or a typed AppError. It never parses the model's output.
 import { AppError } from './errors.js';
 
-// Slightly longer than the server's own 45s Gemini timeout, so normally the
+// Slightly longer than the server's own 50s model timeout, so normally the
 // server reports TIMEOUT first; this is the backstop if the server hangs.
 const CLIENT_TIMEOUT_MS = 60_000;
 

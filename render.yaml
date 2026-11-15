@@ -1,6 +1,6 @@
 # Render Blueprint: one Node web service that builds the React app and serves
 # it plus the /api routes from Express (`npm run serve`).
-# Deploy: Render dashboard → New → Blueprint → pick this repo → paste GEMINI_API_KEY.
+# Deploy: Render dashboard → New → Blueprint → pick this repo → paste GROQ_API_KEY.
 services:
   - type: web
     name: fridge-to-fork
@@ -12,11 +12,9 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: GEMINI_API_KEY
+      - key: GROQ_API_KEY
         sync: false # entered in the dashboard, never committed
       - key: NODE_VERSION
         value: "22"
-      - key: GEMINI_MODEL
-        value: gemini-flash-latest
       - key: RATE_LIMIT_MAX
         value: "40" # model calls per IP per 10 minutes

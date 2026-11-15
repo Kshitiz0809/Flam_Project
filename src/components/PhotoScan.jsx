@@ -163,7 +163,7 @@ export default function PhotoScan({ ingredientsText, onAdd, fault }) {
         </div>
       )}
 
-      <p className="help">Photos are shrunk in your browser and sent to Google Gemini for analysis. They aren't stored.</p>
+      <p className="help">Photos are shrunk in your browser and sent to the AI provider for analysis. They aren't stored.</p>
     </div>
   );
 }

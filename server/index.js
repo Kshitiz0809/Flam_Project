@@ -1,4 +1,4 @@
-// Tiny backend whose only job is to keep the Gemini API key off the browser.
+// Tiny backend whose only job is to keep the LLM API key off the browser.
 //
 //   POST /api/recipe  → { text, finishReason }  (raw model text; client parses)
 //   POST /api/scan    → { text, finishReason }  (ingredients seen in a photo)
@@ -11,25 +11,48 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { ApiError } from './errors.js';
 import { callGemini } from './gemini.js';
+import { callGroq } from './groq.js';
 import { buildUserPrompt, RECIPE_SCHEMA, SCAN_INSTRUCTION, SCAN_SCHEMA, SCAN_USER_TEXT, SYSTEM_INSTRUCTION } from './prompt.js';
 import { applyFault, FAULTS, SAMPLE_RECIPE, SAMPLE_SCAN } from './faults.js';
 import { rateLimit } from './rateLimit.js';
 import { callWithFallback } from './fallback.js';
 
 const PORT = Number(process.env.PORT) || 8787;
-// Primary model + fallbacks tried in order when one is overloaded/slow/limited.
-const MODELS = [
-  process.env.GEMINI_MODEL || 'gemini-flash-latest',
-  ...(process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-flash-lite-latest').split(','),
-]
-  .map((m) => m.trim())
-  .filter((m, i, all) => m && all.indexOf(m) === i);
-const MODEL = MODELS[0];
+const list = (primary, fallbacks) =>
+  [primary, ...fallbacks.split(',')].map((m) => m?.trim()).filter((m, i, all) => m && all.indexOf(m) === i);
+
+// Two interchangeable providers with the same call contract. Groq is used when
+// GROQ_API_KEY is set (fast free tier); otherwise Gemini. For each request
+// kind, models are tried in order when one is overloaded/slow/limited.
+const PROVIDERS = {
+  groq: {
+    key: process.env.GROQ_API_KEY?.trim(),
+    call: callGroq,
+    models: {
+      recipe: list(process.env.GROQ_MODEL || 'llama-3.3-70b-versatile', process.env.GROQ_FALLBACK_MODELS ?? 'llama-3.1-8b-instant'),
+      scan: list(
+        process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
+        process.env.GROQ_VISION_FALLBACK_MODELS ?? 'meta-llama/llama-4-maverick-17b-128e-instruct',
+      ),
+    },
+  },
+  gemini: {
+    key: process.env.GEMINI_API_KEY?.trim(),
+    call: callGemini,
+    models: {
+      recipe: list(process.env.GEMINI_MODEL || 'gemini-flash-latest', process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-flash-lite-latest'),
+      scan: list(process.env.GEMINI_MODEL || 'gemini-flash-latest', process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-flash-lite-latest'),
+    },
+  },
+};
+const PROVIDER_NAME = process.env.LLM_PROVIDER || (process.env.GROQ_API_KEY ? 'groq' : 'gemini');
+const PROVIDER = PROVIDERS[PROVIDER_NAME] ?? PROVIDERS.gemini;
+const API_KEY = PROVIDER.key;
+const MODEL = PROVIDER.models.recipe[0];
 // Whole request budget (stays under the browser's 60s), and the cap per model
 // before moving on to the next one.
-const TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 50_000;
-const ATTEMPT_TIMEOUT_MS = Number(process.env.GEMINI_ATTEMPT_TIMEOUT_MS) || 25_000;
-const API_KEY = process.env.GEMINI_API_KEY?.trim();
+const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || process.env.GEMINI_TIMEOUT_MS) || 50_000;
+const ATTEMPT_TIMEOUT_MS = Number(process.env.LLM_ATTEMPT_TIMEOUT_MS || process.env.GEMINI_ATTEMPT_TIMEOUT_MS) || 25_000;
 const MOCK = process.env.MOCK_LLM === '1';
 const SERVE_STATIC = process.argv.includes('--serve-static');
 const ALLOW_FAULTS = process.env.ALLOW_FAULT_INJECTION
@@ -48,7 +71,7 @@ app.disable('x-powered-by');
 if (process.env.TRUST_PROXY !== '0' && SERVE_STATIC) app.set('trust proxy', 1);
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, model: MOCK ? 'mock' : MODEL, models: MOCK ? [] : MODELS, mock: MOCK, keyConfigured: Boolean(API_KEY), faults: ALLOW_FAULTS ? FAULTS : [] });
+  res.json({ ok: true, provider: MOCK ? 'mock' : PROVIDER_NAME, model: MOCK ? 'mock' : MODEL, models: MOCK ? {} : PROVIDER.models, mock: MOCK, keyConfigured: Boolean(API_KEY), faults: ALLOW_FAULTS ? FAULTS : [] });
 });
 
 const limiter = RATE_LIMIT_MAX > 0 ? rateLimit({ max: RATE_LIMIT_MAX, windowMs: 10 * 60_000 }) : (_req, _res, next) => next();
@@ -86,17 +109,17 @@ function aiRoute({ kind, validate, mock, run }) {
           result = { text: JSON.stringify(mock(body)), finishReason: 'STOP' };
         } else {
           if (!API_KEY) {
-            throw new ApiError(500, 'CONFIG', 'GEMINI_API_KEY is not set on the server (see .env.example)');
+            throw new ApiError(500, 'CONFIG', `${PROVIDER_NAME === 'groq' ? 'GROQ_API_KEY' : 'GEMINI_API_KEY'} is not set on the server (see .env.example)`);
           }
           const request = run(body);
           result = await callWithFallback({
-            models: MODELS,
+            models: PROVIDER.models[kind],
             attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
             signal: controller.signal,
-            call: (model, signal) => callGemini({ apiKey: API_KEY, model, signal, ...request }),
+            call: (model, signal) => PROVIDER.call({ apiKey: API_KEY, model, signal, ...request }),
             log: console.warn,
           });
-          if (result.model !== MODEL) console.log(`[api] ${kind} served by fallback model ${result.model}`);
+          if (result.model !== PROVIDER.models[kind][0]) console.log(`[api] ${kind} served by fallback model ${result.model}`);
         }
       }
 
@@ -216,7 +239,11 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  const mode = MOCK ? 'MOCK (canned responses)' : API_KEY ? `Gemini models ${MODELS.join(' → ')}` : 'NO API KEY — set GEMINI_API_KEY';
+  const mode = MOCK
+    ? 'MOCK (canned responses)'
+    : API_KEY
+      ? `${PROVIDER_NAME}: recipe ${PROVIDER.models.recipe.join(' → ')} | scan ${PROVIDER.models.scan.join(' → ')}`
+      : 'NO API KEY — set GROQ_API_KEY (or GEMINI_API_KEY)';
   const extras = [ALLOW_FAULTS && 'fault injection on', RATE_LIMIT_MAX > 0 && `rate limit ${RATE_LIMIT_MAX}/10min per IP`].filter(Boolean);
   console.log(`[api] listening on http://localhost:${PORT} · ${mode}${extras.length ? ' · ' + extras.join(' · ') : ''}`);
 });

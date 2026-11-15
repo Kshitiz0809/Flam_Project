@@ -147,7 +147,7 @@ export default function App() {
         ) : health.mock ? (
           <span>Mock mode — returning a canned recipe (MOCK_LLM=1)</span>
         ) : !health.keyConfigured ? (
-          <span className="warn-text">Server has no GEMINI_API_KEY — see README</span>
+          <span className="warn-text">Server has no API key (GROQ_API_KEY) — see README</span>
         ) : (
           <span>Recipes by {health.model}. AI can make mistakes — check allergens and cooking temperatures.</span>
         )}
