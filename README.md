@@ -1,10 +1,10 @@
 # Fridge to Fork
 
-Type what's in your fridge and get back a recipe you can **use**, not just read: check off steps as you cook, scale servings, swap ingredients you don't have, and tweak the recipe with follow-up requests ("make it vegetarian") without starting over.
+Type (or **photograph**) what's in your fridge and get back a recipe you can **use**, not just read: check off steps as you cook, scale servings, swap ingredients you don't have, and tweak the recipe with follow-up requests ("make it vegetarian") without starting over.
 
 The AI (Google Gemini) returns **structured JSON**. The app validates it, salvages what it can, and renders it as interactive React components. It's not a chatbot.
 
-> 📹 Demo video: _add link here_
+> 🌐 Live: _add Render URL here_ · 📹 Demo video: _add link here_
 
 ---
 
@@ -34,6 +34,7 @@ Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_TIMEO
 ## Usage
 
 1. List ingredients in any format, then pick servings and dietary needs. Or click an example.
+   - **📷 Scan a photo of your fridge**: the AI lists what it can see. You untick anything wrong (low-confidence guesses start unticked), then **Add to my list**. Nothing goes into your list without your confirmation.
 2. **Get a recipe** (or <kbd>Ctrl</kbd>+<kbd>Enter</kbd>). While it loads you'll see an elapsed timer. **Cancel** or <kbd>Esc</kbd> aborts the request.
 3. In the recipe you can:
    - **−/+ servings**: every quantity rescales (`1 ½ cup`, `440 g`).
@@ -48,22 +49,26 @@ Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_TIMEO
 
 ```
 browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini generateContent
+        ──POST /api/scan────▶   (photo, base64)
    ▲                             holds API key,         (JSON mode + responseSchema)
    │                             validates input,
    │  { text, finishReason }     timeout + abort
    │  or { error: {code,…} }
-   └── src/lib/parseRecipe.js: extract → validate → normalize → Recipe | refusal | typed error
+   └── src/lib/parseRecipe.js / parseScan.js: extract → validate → normalize → data | refusal | typed error
 ```
 
 **Server (`server/`)**: a thin proxy whose main job is keeping the key out of the browser.
-- `index.js`: validates the request body (length limits, servings 1–12, diet whitelist). It enforces a 45s timeout and **aborts the Gemini call if the browser disconnects**. Every failure returns a JSON `{ error: { code, message, retryable } }` (never an HTML stack trace).
-- `gemini.js`: one `fetch` to the Gemini REST API, with no SDK, so each failure is visible. It maps HTTP 429/4xx/5xx, safety blocks (`promptFeedback.blockReason`, `finishReason: SAFETY`), and the API envelope to typed errors. It returns the raw model text plus `finishReason`.
-- `prompt.js`: system instruction plus a `responseSchema`. User text is wrapped in `<user_ingredients>` tags, and the model is told to treat it as data (basic prompt-injection hygiene).
+- `index.js`: both AI routes share one `aiRoute()` handler. It validates the request body (length limits, servings 1–12, diet whitelist; for photos: JPEG/PNG/WebP only, valid base64, size cap) and enforces a 45s timeout. It **aborts the Gemini call if the browser disconnects**. Every failure returns a JSON `{ error: { code, message, retryable } }` (never an HTML stack trace).
+- `rateLimit.js`: per-IP limit (40 model calls / 10 min by default in production), so a public deploy can't drain the API key's quota.
+- `gemini.js`: one generic `callGemini()` doing a single `fetch` to the Gemini REST API, with no SDK, so each failure is visible. Text and image parts go in the same request. It maps HTTP 429/4xx/5xx, safety blocks (`promptFeedback.blockReason`, `finishReason: SAFETY`), and the API envelope to typed errors. It returns the raw model text plus `finishReason`.
+- `prompt.js`: system instructions plus `responseSchema`s for recipes and photo scans. User text is wrapped in `<user_ingredients>` tags and treated as data. The scan prompt also says to ignore any instructions written *in the photo* (e.g. on a label or note).
 - `faults.js`: dev-only fault injection (see below).
 
 **Client (`src/`)**
 - `lib/parseRecipe.js`: **the core of "turning unpredictable output into reliable UI."** See the next section.
-- `hooks/useRecipeGenerator.js`: owns the request lifecycle: loading, error, refused, auto-retry, cancel, and **stale-response protection**.
+- `hooks/useAiRequest.js`: generic request lifecycle: loading, error, refused, auto-retry, cancel, and **stale-response protection**. `useRecipeGenerator` and `useIngredientScan` are thin wrappers that plug in their own `send` + `parse` functions.
+- `lib/image.js`: validates the chosen photo, then downscales it to ≤1280px and re-encodes it as JPEG in the browser (a ~4 MB phone photo becomes ~200 KB). This also strips EXIF/GPS metadata.
+- `components/PhotoScan.jsx`: the photo flow. The user confirms detected items before they're added.
 - `lib/session.js`: a pure reducer (`useReducer`) for the recipe being worked on: versions (for undo), servings, checked steps and ingredients, chosen swaps. Plain JSON, so it saves to `localStorage` as-is.
 - `lib/storage.js`: loads and saves sessions. Saved data is re-validated through `normalizeRecipe` on load, because localStorage is untrusted too (old app versions, manual edits).
 - `lib/scale.js`: scaling and kitchen-friendly formatting (fractions for spoons/cups, rounding for grams).
@@ -92,6 +97,11 @@ browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini gener
 | **Rate limit / provider 5xx / network down** | Typed codes from the server; `fetch` rejection → `NETWORK` | Specific message + retry. **Not** auto-retried, to avoid hammering a limited API |
 | **Stale response** | Each run gets an incrementing id. A new run or Cancel **aborts the previous fetch and bumps the id**. Results are applied only if their id is still current. | An older, slower response can never overwrite a newer one. (Abort alone isn't enough: a response can resolve just before `abort()` runs.) |
 | **Refinement fails** | Same pipeline, but errors render **inline** under the tweak box | "Your recipe is unchanged." The current recipe is never wiped by a failed edit. Recipe body is `inert` while refining. |
+| **Photo misidentified** | Model returns a `confidence` per item | Low-confidence items start **unticked** and dashed; the user confirms everything before it's added |
+| **Photo isn't food / nothing found** | `refusal` field, or an empty list | "Couldn't see any food…" / "Didn't spot any ingredients — try a closer, brighter photo" |
+| **Photo the browser can't open** (e.g. HEIC on Chrome), wrong type, >20 MB | Checked/decoded client-side → `IMAGE_*` codes | Specific message + "Choose another photo"; the API is never called |
+| **Messy scan output** (duplicates, strings instead of objects, bad confidence values) | `normalizeScan` dedupes, coerces, defaults | Clean chips + a note about skipped items |
+| **New photo while one is processing** | Same request-id guard as recipes, plus a guard on the async resize step | The older photo's result is discarded |
 | **Refine lands on a different recipe** | Opening a saved recipe or Undo cancels any in-flight request | n/a |
 | **Corrupted saved data** | Every saved version goes back through `normalizeRecipe` | Bad entries are silently skipped |
 
@@ -99,15 +109,16 @@ Auto-retry is deliberately limited to **output** problems, which are non-determi
 
 ### Try every failure yourself
 
-In dev (`npm start`), a **"Simulate failure"** panel sits at the bottom-right. Pick a fault and every request returns it until you turn it off: `flaky-json` (bad once, then recovers via auto-retry), `malformed`, `fenced-prose`, `wrong-shape`, `partial`, `empty`, `refusal`, `truncated`, `slow` (12s), `timeout`, `rate-limit`, `server-error`. The server only honours the `x-simulate-fault` header in dev; `npm run serve` disables it.
+In dev (`npm start`), a **"Simulate failure"** panel (it applies to photo scans too) sits at the bottom-right. Pick a fault and every request returns it until you turn it off: `flaky-json` (bad once, then recovers via auto-retry), `malformed`, `fenced-prose`, `wrong-shape`, `partial`, `empty`, `refusal`, `truncated`, `slow` (12s), `timeout`, `rate-limit`, `server-error`. The server only honours the `x-simulate-fault` header in dev; `npm run serve` disables it.
 
 To see the race protection, submit, then edit the ingredients and submit again before the first one finishes (try it with `slow`).
 
 ### Tests
 
-`npm test` runs 56 tests:
+`npm test` runs 68 tests:
 - `parseRecipe.test.js`: fences, prose, malformed, truncation, wrong shape, salvage + warnings, quantity parsing (`"1 1/2"`, `"½"`)
 - `useRecipeGenerator.test.jsx`: **out-of-order responses** (newer wins), auto-retry then success, retry exhausted → typed error, no auto-retry on 429, network failure, cancel drops the in-flight result
+- `parseScan.test.js`, `PhotoScan.test.jsx`: scan parsing; the photo flow with low-confidence items unticked, only confirmed items added, unreadable image, auto-retry, refusal, empty result
 - `App.test.jsx`: renders the whole app with a mocked API: scaling, swaps, step progress, autosave, error → retry, refusal, failed refinement keeps the recipe, undo
 - `scale.test.js`, `session.test.js`
 
@@ -127,7 +138,8 @@ To see the race protection, submit, then edit the ingredients and submit again b
 - **Checkmarks reset when a refinement is applied.** Ids are positional, so after the AI restructures the recipe, old checkmarks could point at the wrong step. Servings are kept.
 - **Refinement sends the whole recipe back** to the model (fine at this size; could use a JSON-patch style edit for larger docs).
 - **Quantities are only as good as the model's.** Unit conversion (cups ↔ grams) isn't attempted, and "to taste" items don't scale.
-- **No rate limiting on the proxy.** Anyone who can reach the server can spend the key's quota. A real deployment would add per-IP limits.
+- **Rate limiting is in-memory**, so it resets on restart and isn't shared across multiple instances (fine for one free Render instance; Redis would be needed beyond that).
+- **One photo at a time.** Scan again to add more. Photos aren't kept in saved sessions.
 - **Sessions are per-browser** (localStorage), capped at 20.
 - **AI-generated food content:** no allergen guarantees. The footer says so.
 - The default model alias `gemini-flash-latest` may change behaviour over time. Pin `GEMINI_MODEL` for reproducibility.
@@ -137,10 +149,21 @@ To see the race protection, submit, then edit the ingredients and submit again b
 1. Streaming with progressive rendering of completed steps.
 2. Step timers (the `minutes` field is already there).
 3. A "keep my checkmarks" merge on refinement by matching steps by text similarity.
-4. Rate limiting + deploy (Render/Fly for the Express server, or move `/api/recipe` to a serverless function).
+4. Multi-photo scans, and pasting/dropping images into the text box.
 5. An eval script that runs ~30 varied inputs through the real model and reports parse/validation failure rates.
 
 ---
+
+## Deploying (Render)
+
+The repo includes a `render.yaml` blueprint: one free Node web service that runs `npm ci --include=dev && npm run build`, then `npm run serve` (Express serves `dist/` and `/api` from one origin, so there's no CORS setup and the key never leaves the server).
+
+1. Push this repo to GitHub.
+2. On [render.com](https://render.com): **New → Blueprint**, then pick the repo.
+3. When prompted, paste your **GEMINI_API_KEY**, then **Apply**.
+4. Wait for the build, then open the `https://<name>.onrender.com` URL. `/api/health` should show `"keyConfigured": true`.
+
+In production mode, fault injection is disabled and per-IP rate limiting is on. On the free plan the service sleeps after ~15 minutes idle, so the first visit afterwards takes ~30–60s to wake up. Every push to `main` redeploys automatically.
 
 ## AI usage
 
