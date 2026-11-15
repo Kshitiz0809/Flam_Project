@@ -31,6 +31,38 @@ export const SAMPLE_RECIPE = {
   tips: ['Save a mug of pasta water before draining — the starch makes the sauce cling.'],
 };
 
+export const SAMPLE_SCAN = {
+  refusal: null,
+  ingredients: [
+    { name: 'eggs', amount: '6', confidence: 'high' },
+    { name: 'whole milk', amount: 'half a bottle', confidence: 'high' },
+    { name: 'baby spinach', amount: '1 bag', confidence: 'high' },
+    { name: 'cheddar cheese', amount: '1 block', confidence: 'medium' },
+    { name: 'red bell pepper', amount: '2', confidence: 'medium' },
+    { name: 'pesto', amount: '1 jar', confidence: 'low' },
+  ],
+};
+
+const SAMPLES = { recipe: SAMPLE_RECIPE, scan: SAMPLE_SCAN };
+
+const PARTIAL = {
+  recipe: () => ({
+    ...SAMPLE_RECIPE,
+    servings: '2 people',
+    ingredients: [...SAMPLE_RECIPE.ingredients, { quantity: 3 }, 'a pinch of chilli flakes', { name: '', unit: 'g' }],
+    steps: [...SAMPLE_RECIPE.steps.slice(0, 5), { minutes: 4 }, '6. Serve topped with grated parmesan.'],
+  }),
+  scan: () => ({
+    refusal: null,
+    ingredients: [...SAMPLE_SCAN.ingredients.slice(0, 3), { amount: '2' }, 'lemons', { name: 'Eggs', confidence: 'high' }, { name: 'butter', confidence: 'very sure' }],
+  }),
+};
+
+const REFUSAL = {
+  recipe: { refusal: "That doesn't look like a list of ingredients — try something like \"eggs, spinach, feta\".", title: '', servings: 0, ingredients: [], steps: [] },
+  scan: { refusal: "I couldn't see any food in this photo — try a picture of your open fridge or pantry shelf.", ingredients: [] },
+};
+
 export const FAULTS = [
   'flaky-json', // malformed on attempt 1, fine on attempt 2 → shows auto-recovery
   'malformed',
@@ -60,38 +92,36 @@ const sleep = (ms, signal) =>
  * throws an ApiError for faults that simulate *transport* failures, or returns
  * `null` to let the request proceed normally (after any delay).
  */
-export async function applyFault(fault, { attempt, signal }) {
+export async function applyFault(fault, { kind = 'recipe', attempt, signal }) {
   const ok = (obj) => ({ text: JSON.stringify(obj), finishReason: 'STOP' });
+  const sample = SAMPLES[kind];
   switch (fault) {
     case 'flaky-json':
       await sleep(800, signal);
-      return attempt <= 1 ? { text: '{"title": "Pasta", "ingredients": [{"name": ', finishReason: 'STOP' } : ok(SAMPLE_RECIPE);
+      return attempt <= 1 ? { text: '{"title": "Pasta", "ingredients": [{"name": ', finishReason: 'STOP' } : ok(sample);
     case 'malformed':
       await sleep(800, signal);
       return { text: 'Sure! Here is a recipe: {title: Pasta, ingredients: [pasta, tomato', finishReason: 'STOP' };
     case 'fenced-prose':
       await sleep(800, signal);
-      return { text: 'Here you go!\n```json\n' + JSON.stringify(SAMPLE_RECIPE, null, 2) + '\n```\nEnjoy!', finishReason: 'STOP' };
+      return { text: 'Here you go!\n```json\n' + JSON.stringify(sample, null, 2) + '\n```\nEnjoy!', finishReason: 'STOP' };
     case 'wrong-shape':
       await sleep(800, signal);
       return ok({ recipeName: 'Pasta', items: 'pasta, tomatoes, garlic', instructions: 'Cook it.' });
     case 'partial':
       await sleep(800, signal);
-      return ok({
-        ...SAMPLE_RECIPE,
-        servings: '2 people',
-        ingredients: [...SAMPLE_RECIPE.ingredients, { quantity: 3 }, 'a pinch of chilli flakes', { name: '', unit: 'g' }],
-        steps: [...SAMPLE_RECIPE.steps.slice(0, 5), { minutes: 4 }, '6. Serve topped with grated parmesan.'],
-      });
+      return ok(PARTIAL[kind]());
     case 'empty':
       await sleep(800, signal);
       return { text: '', finishReason: 'STOP' };
     case 'refusal':
       await sleep(800, signal);
-      return ok({ refusal: "That doesn't look like a list of ingredients — try something like \"eggs, spinach, feta\".", title: '', servings: 0, ingredients: [], steps: [] });
-    case 'truncated':
+      return ok(REFUSAL[kind]);
+    case 'truncated': {
       await sleep(800, signal);
-      return { text: JSON.stringify(SAMPLE_RECIPE).slice(0, 400), finishReason: 'MAX_TOKENS' };
+      const full = JSON.stringify(sample);
+      return { text: full.slice(0, Math.floor(full.length / 2)), finishReason: 'MAX_TOKENS' };
+    }
     case 'slow':
       await sleep(12_000, signal);
       return null;

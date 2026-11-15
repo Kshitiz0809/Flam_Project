@@ -1,19 +1,23 @@
-// Network layer: one function that turns "POST /api/recipe" into either
-// `{ text, finishReason }` or a typed AppError. It never parses the recipe.
+// Network layer: turns "POST /api/<route>" into either `{ text, finishReason }`
+// or a typed AppError. It never parses the model's output.
 import { AppError } from './errors.js';
 
 // Slightly longer than the server's own 45s Gemini timeout, so normally the
 // server reports TIMEOUT first; this is the backstop if the server hangs.
 const CLIENT_TIMEOUT_MS = 60_000;
 
+export const fetchRecipeText = (payload, opts) => postForModelText('/api/recipe', payload, opts);
+export const fetchScanText = (payload, opts) => postForModelText('/api/scan', payload, opts);
+
 /**
- * @param {object} payload            request body for /api/recipe
+ * @param {string} path               API route
+ * @param {object} payload            JSON request body
  * @param {object} opts
  * @param {AbortSignal} opts.signal   aborted when the request is superseded/cancelled
  * @param {number} [opts.attempt]
  * @param {string} [opts.fault]       dev-only fault injection
  */
-export async function fetchRecipeText(payload, { signal, attempt = 1, fault } = {}) {
+export async function postForModelText(path, payload, { signal, attempt = 1, fault } = {}) {
   // Link the caller's signal with our own timeout.
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -30,7 +34,7 @@ export async function fetchRecipeText(payload, { signal, attempt = 1, fault } = 
 
     let res;
     try {
-      res = await fetch('/api/recipe', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+      res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
     } catch (err) {
       if (err.name === 'AbortError') {
         if (timedOut) throw new AppError('TIMEOUT', 'No response from the server', { retryable: true });

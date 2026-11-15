@@ -134,7 +134,7 @@ export default function App() {
 
       <main className="layout">
         <aside className="input-panel">
-          <IngredientForm draft={draft} onChange={setDraft} onSubmit={generate} busy={gen.isLoading} />
+          <IngredientForm draft={draft} onChange={setDraft} onSubmit={generate} busy={gen.isLoading} fault={fault} />
         </aside>
         <section className="result" aria-live="polite" aria-busy={gen.isLoading}>
           {content}

@@ -11,25 +11,28 @@ export class AppError extends Error {
 }
 
 const COPY = {
-  NETWORK: { title: "Can't reach the server", hint: 'Check your connection (and that `npm start` is running), then try again.' },
+  NETWORK: { title: "Can't reach the server", hint: 'Check your internet connection, then try again. (Running locally? Make sure `npm start` is still running.)' },
   TIMEOUT: { title: 'The model took too long', hint: 'It may be busy. Trying again usually works.' },
-  RATE_LIMITED: { title: 'Too many requests', hint: 'The free tier has a per-minute limit. Wait a few seconds and try again.' },
+  RATE_LIMITED: { title: 'Too many requests', hint: "You've hit a usage limit. Wait a little and try again." },
   UPSTREAM_ERROR: { title: 'The AI service had a problem', hint: 'This is usually temporary. Try again.' },
   UPSTREAM_UNREACHABLE: { title: "Can't reach the AI service", hint: 'The server could not connect to Gemini. Try again shortly.' },
   CONFIG: { title: 'The server is not set up correctly', hint: 'Check GEMINI_API_KEY / GEMINI_MODEL in .env and restart.' },
   BAD_REQUEST: { title: "That request couldn't be sent", hint: '' },
   BLOCKED: { title: 'The AI declined this request', hint: 'Its safety filter blocked the response. Try rewording your ingredients.' },
   MALFORMED_JSON: { title: 'The AI sent back garbled data', hint: 'We tried again automatically, but it was still unreadable.' },
-  INVALID_SHAPE: { title: "The AI's answer wasn't a usable recipe", hint: 'We tried again automatically. Rewording the ingredients may help.' },
+  INVALID_SHAPE: { title: "The AI's answer was in the wrong format", hint: 'We tried again automatically. Trying once more, or rewording, usually helps.' },
   EMPTY: { title: 'The AI returned nothing', hint: 'We tried again automatically. Try again or add more detail.' },
-  TRUNCATED: { title: 'The recipe got cut off', hint: 'The response hit its length limit. Try again, or ask for something simpler.' },
+  TRUNCATED: { title: "The AI's answer got cut off", hint: 'The response hit its length limit. Try again, or ask for something simpler.' },
+  IMAGE_TYPE: { title: "That file isn't a photo", hint: 'Choose a JPEG, PNG or WebP image.' },
+  IMAGE_TOO_LARGE: { title: 'That photo is too large', hint: 'Choose an image under 20 MB.' },
+  IMAGE_UNREADABLE: { title: "Couldn't open that photo", hint: 'Your browser may not support this format (e.g. HEIC). Try a JPEG or PNG, or take a screenshot of it.' },
   INTERNAL: { title: 'Something went wrong on the server', hint: 'Try again.' },
   UNKNOWN: { title: 'Something went wrong', hint: 'Try again.' },
 };
 
 /** User-facing description of any thrown value. */
 export function describeError(err) {
-  const code = err?.code in COPY ? err.code : 'UNKNOWN';
+  const code = typeof err?.code === 'string' && err.code in COPY ? err.code : 'UNKNOWN';
   const copy = COPY[code];
   return {
     code,

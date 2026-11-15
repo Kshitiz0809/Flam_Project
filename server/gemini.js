@@ -2,29 +2,31 @@
 // hand makes every failure mode (HTTP errors, safety blocks, truncation)
 // visible and explainable.
 import { ApiError } from './errors.js';
-import { RECIPE_SCHEMA, SYSTEM_INSTRUCTION } from './prompt.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
- * Calls Gemini and returns the model's raw text. Parsing/validation of that
- * text happens on the client (see src/lib/parseRecipe.js).
+ * Calls Gemini with JSON-mode output and returns the model's raw text.
+ * Parsing/validation of that text happens on the client (src/lib/parse*.js).
  *
  * @param {object} opts
  * @param {string} opts.apiKey
  * @param {string} opts.model
- * @param {string} opts.prompt
- * @param {AbortSignal} opts.signal  aborted on timeout or client disconnect
+ * @param {string} opts.systemInstruction
+ * @param {Array<object>} opts.parts   user-turn parts: { text } and/or { inlineData: { mimeType, data } }
+ * @param {object} opts.schema         Gemini responseSchema (OpenAPI subset)
+ * @param {number} [opts.temperature]
+ * @param {AbortSignal} opts.signal    aborted on timeout or client disconnect
  * @returns {Promise<{ text: string, finishReason: string | null }>}
  */
-export async function generateRecipeText({ apiKey, model, prompt, signal }) {
+export async function callGemini({ apiKey, model, systemInstruction, parts, schema, temperature = 0.7, signal }) {
   const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ role: 'user', parts }],
     generationConfig: {
       responseMimeType: 'application/json',
-      responseSchema: RECIPE_SCHEMA,
-      temperature: 0.7,
+      responseSchema: schema,
+      temperature,
       maxOutputTokens: 8192,
     },
   };
@@ -56,7 +58,7 @@ export async function generateRecipeText({ apiKey, model, prompt, signal }) {
 
   const candidate = data.candidates?.[0];
   const finishReason = candidate?.finishReason ?? null;
-  if (['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION'].includes(finishReason)) {
+  if (['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION', 'IMAGE_SAFETY'].includes(finishReason)) {
     throw new ApiError(422, 'BLOCKED', `Response blocked (${finishReason})`);
   }
 
@@ -78,6 +80,9 @@ async function toApiError(res) {
   }
   if (res.status === 400 && /api key/i.test(upstreamMsg)) {
     return new ApiError(500, 'CONFIG', `Gemini rejected the API key: ${upstreamMsg}`);
+  }
+  if (res.status === 400 && /image|inline_data|mime/i.test(upstreamMsg)) {
+    return new ApiError(400, 'BAD_REQUEST', "The AI couldn't read that image. Try a JPEG or PNG photo.");
   }
   if (res.status === 401 || res.status === 403) {
     return new ApiError(500, 'CONFIG', `Gemini auth failed: ${upstreamMsg}`);

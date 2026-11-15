@@ -91,7 +91,7 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText(/what's in your fridge/i), { target: { value: 'eggs' } });
     fireEvent.click(screen.getByRole('button', { name: /get a recipe/i }));
 
-    expect(await screen.findByText(/wasn't a usable recipe/i)).toBeTruthy();
+    expect(await screen.findByText(/wrong format/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(await screen.findByRole('heading', { name: RECIPE.title })).toBeTruthy();
   });

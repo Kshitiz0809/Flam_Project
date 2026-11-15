@@ -1,13 +1,20 @@
+import PhotoScan from './PhotoScan.jsx';
+
 const MAX_CHARS = 2000;
 const DIETS = ['vegetarian', 'vegan', 'gluten-free', 'dairy-free', 'nut-free'];
 
-export default function IngredientForm({ draft, onChange, onSubmit, busy }) {
+export default function IngredientForm({ draft, onChange, onSubmit, busy, fault }) {
   const trimmed = draft.ingredients.trim();
   const tooLong = draft.ingredients.length > MAX_CHARS;
   const canSubmit = trimmed.length > 0 && !tooLong;
 
   const update = (patch) => onChange({ ...draft, ...patch });
   const toggleDiet = (d) => update({ diet: draft.diet.includes(d) ? draft.diet.filter((x) => x !== d) : [...draft.diet, d] });
+
+  const addFromPhoto = (text) => {
+    const current = draft.ingredients.trim().replace(/[,;\s]+$/, '');
+    update({ ingredients: current ? `${current}, ${text}` : text });
+  };
 
   const submit = (e) => {
     e.preventDefault();
@@ -35,6 +42,8 @@ export default function IngredientForm({ draft, onChange, onSubmit, busy }) {
       <div id="ingredients-help" className={`help ${tooLong ? 'error-text' : ''}`}>
         {tooLong ? `Too long — ${draft.ingredients.length}/${MAX_CHARS} characters` : 'Any format works: a list, a sentence, quantities optional.'}
       </div>
+
+      <PhotoScan ingredientsText={draft.ingredients} onAdd={addFromPhoto} fault={fault} />
 
       <div className="form-row">
         <label htmlFor="servings" className="label-inline">
