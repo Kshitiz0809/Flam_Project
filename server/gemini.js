@@ -3,7 +3,13 @@
 // visible and explainable.
 import { ApiError } from './errors.js';
 
-const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const API_BASE = process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta/models';
+
+// "Thinking" adds a lot of latency and isn't needed to write a recipe as JSON,
+// so we ask for none. Some models refuse that setting; remember those and
+// send the request without it from then on.
+const LOW_THINKING = process.env.GEMINI_LOW_THINKING !== '0';
+const rejectsThinkingConfig = new Set();
 
 /**
  * Calls Gemini with JSON-mode output and returns the model's raw text.
@@ -19,7 +25,18 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
  * @param {AbortSignal} opts.signal    aborted on timeout or client disconnect
  * @returns {Promise<{ text: string, finishReason: string | null }>}
  */
-export async function callGemini({ apiKey, model, systemInstruction, parts, schema, temperature = 0.7, signal }) {
+export async function callGemini(opts) {
+  try {
+    return await requestGemini(opts, LOW_THINKING && !rejectsThinkingConfig.has(opts.model));
+  } catch (err) {
+    if (err.code !== 'THINKING_UNSUPPORTED') throw err;
+    rejectsThinkingConfig.add(opts.model);
+    console.warn(`[api] ${opts.model} rejected thinkingConfig; retrying without it`);
+    return requestGemini(opts, false);
+  }
+}
+
+async function requestGemini({ apiKey, model, systemInstruction, parts, schema, temperature = 0.7, signal }, lowThinking) {
   const body = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: 'user', parts }],
@@ -28,6 +45,7 @@ export async function callGemini({ apiKey, model, systemInstruction, parts, sche
       responseSchema: schema,
       temperature,
       maxOutputTokens: 8192,
+      ...(lowThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
     },
   };
 
@@ -40,7 +58,7 @@ export async function callGemini({ apiKey, model, systemInstruction, parts, sche
       signal,
     });
   } catch (err) {
-    if (err.name === 'AbortError') throw err; // handled by caller (timeout vs disconnect)
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') throw err; // handled by caller
     throw new ApiError(502, 'UPSTREAM_UNREACHABLE', `Could not reach Gemini: ${err.message}`, {
       retryable: true,
     });
@@ -78,6 +96,13 @@ async function toApiError(res) {
   if (res.status === 429) {
     return new ApiError(429, 'RATE_LIMITED', upstreamMsg, { retryable: true });
   }
+  if (res.status === 503) {
+    // Gemini's "model is overloaded / experiencing high demand"
+    return new ApiError(503, 'OVERLOADED', upstreamMsg, { retryable: true });
+  }
+  if (res.status === 400 && /think/i.test(upstreamMsg)) {
+    return new ApiError(400, 'THINKING_UNSUPPORTED', upstreamMsg);
+  }
   if (res.status === 400 && /api key/i.test(upstreamMsg)) {
     return new ApiError(500, 'CONFIG', `Gemini rejected the API key: ${upstreamMsg}`);
   }
@@ -88,7 +113,7 @@ async function toApiError(res) {
     return new ApiError(500, 'CONFIG', `Gemini auth failed: ${upstreamMsg}`);
   }
   if (res.status === 404) {
-    return new ApiError(500, 'CONFIG', `Model not found — check GEMINI_MODEL: ${upstreamMsg}`);
+    return new ApiError(500, 'MODEL_NOT_FOUND', `Model not found — check GEMINI_MODEL: ${upstreamMsg}`);
   }
   if (res.status >= 500) {
     return new ApiError(502, 'UPSTREAM_ERROR', upstreamMsg, { retryable: true });

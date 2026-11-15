@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Turn the ingredients in your fridge into an interactive recipe, using an LLM that returns structured JSON.",
   "engines": {
-    "node": ">=18"
+    "node": ">=20.3"
   },
   "scripts": {
     "start": "concurrently -k -n api,web -c blue,green \"node server/index.js\" \"vite\"",

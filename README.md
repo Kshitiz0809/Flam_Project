@@ -29,7 +29,7 @@ Get a free Gemini key at <https://aistudio.google.com/apikey>.
 | `npm run build` | Production build into `dist/`                                       |
 | `npm run serve` | Serve `dist/` + API from one Express process on :8787 (fault injection off) |
 
-Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_TIMEOUT_MS` (default 45000), `PORT`.
+Optional env vars: `GEMINI_MODEL` (default `gemini-flash-latest`), `GEMINI_FALLBACK_MODELS` (default `gemini-flash-lite-latest`), `GEMINI_ATTEMPT_TIMEOUT_MS` (25000), `GEMINI_TIMEOUT_MS` (50000), `PORT`. See `.env.example`.
 
 ## Usage
 
@@ -59,8 +59,9 @@ browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini gener
 
 **Server (`server/`)**: a thin proxy whose main job is keeping the key out of the browser.
 - `index.js`: both AI routes share one `aiRoute()` handler. It validates the request body (length limits, servings 1–12, diet whitelist; for photos: JPEG/PNG/WebP only, valid base64, size cap) and enforces a 45s timeout. It **aborts the Gemini call if the browser disconnects**. Every failure returns a JSON `{ error: { code, message, retryable } }` (never an HTML stack trace).
+- `fallback.js`: **model fallback chain.** If the main model is overloaded (503 "high demand"), rate-limited, erroring, or slower than 25s, the same request is retried on `gemini-flash-lite-latest`. That model has separate capacity and its own free-tier quota, all within one 50s budget. Content problems (safety blocks, bad input) don't trigger a fallback, because another model wouldn't fix them.
 - `rateLimit.js`: per-IP limit (40 model calls / 10 min by default in production), so a public deploy can't drain the API key's quota.
-- `gemini.js`: one generic `callGemini()` doing a single `fetch` to the Gemini REST API, with no SDK, so each failure is visible. Text and image parts go in the same request. It maps HTTP 429/4xx/5xx, safety blocks (`promptFeedback.blockReason`, `finishReason: SAFETY`), and the API envelope to typed errors. It returns the raw model text plus `finishReason`.
+- `gemini.js`: one generic `callGemini()` doing a single `fetch` to the Gemini REST API, with no SDK, so each failure is visible. Text and image parts go in the same request. It asks for no "thinking" (`thinkingBudget: 0`), which cuts latency a lot for this task. If a model refuses that setting, it retries without it and remembers that for the model. It maps HTTP 429/4xx/5xx, safety blocks (`promptFeedback.blockReason`, `finishReason: SAFETY`), and the API envelope to typed errors. It returns the raw model text plus `finishReason`.
 - `prompt.js`: system instructions plus `responseSchema`s for recipes and photo scans. User text is wrapped in `<user_ingredients>` tags and treated as data. The scan prompt also says to ignore any instructions written *in the photo* (e.g. on a label or note).
 - `faults.js`: dev-only fault injection (see below).
 
@@ -93,7 +94,8 @@ browser ──POST /api/recipe──▶ Express (server/) ──▶ Gemini gener
 | **Model says it's not food** | Schema has a `refusal` field | Friendly empty state with the model's reason and example inputs |
 | **Safety block** | `blockReason` / `finishReason: SAFETY` → `BLOCKED` | Explains it was declined; no auto-retry |
 | **Slow** | Elapsed timer; after 8s, "Taking longer than usual" | Cancel button / Esc at any time |
-| **Timeout** | Server aborts Gemini at 45s → `TIMEOUT` (504); client backstop at 60s | Error + retry |
+| **Model overloaded / slow / rate-limited** (common on the free tier) | 503 → `OVERLOADED`, 429, 5xx, or no answer within 25s | **Server silently falls back to a lighter model**; the user just gets a recipe. Only if every model fails: a specific message + retry |
+| **Timeout** | Whole request capped at 50s server-side → `TIMEOUT` (504); client backstop at 60s | Error + retry |
 | **Rate limit / provider 5xx / network down** | Typed codes from the server; `fetch` rejection → `NETWORK` | Specific message + retry. **Not** auto-retried, to avoid hammering a limited API |
 | **Stale response** | Each run gets an incrementing id. A new run or Cancel **aborts the previous fetch and bumps the id**. Results are applied only if their id is still current. | An older, slower response can never overwrite a newer one. (Abort alone isn't enough: a response can resolve just before `abort()` runs.) |
 | **Refinement fails** | Same pipeline, but errors render **inline** under the tweak box | "Your recipe is unchanged." The current recipe is never wiped by a failed edit. Recipe body is `inert` while refining. |
@@ -115,11 +117,12 @@ To see the race protection, submit, then edit the ingredients and submit again b
 
 ### Tests
 
-`npm test` runs 68 tests:
+`npm test` runs 77 tests:
 - `parseRecipe.test.js`: fences, prose, malformed, truncation, wrong shape, salvage + warnings, quantity parsing (`"1 1/2"`, `"½"`)
 - `useRecipeGenerator.test.jsx`: **out-of-order responses** (newer wins), auto-retry then success, retry exhausted → typed error, no auto-retry on 429, network failure, cancel drops the in-flight result
 - `parseScan.test.js`, `PhotoScan.test.jsx`: scan parsing; the photo flow with low-confidence items unticked, only confirmed items added, unreadable image, auto-retry, refusal, empty result
 - `App.test.jsx`: renders the whole app with a mocked API: scaling, swaps, step progress, autosave, error → retry, refusal, failed refinement keeps the recipe, undo
+- `server/fallback.test.js`: fallback on 503/429/5xx/slow model; no fallback on safety blocks; stops on client disconnect
 - `scale.test.js`, `session.test.js`
 
 ---
@@ -138,6 +141,7 @@ To see the race protection, submit, then edit the ingredients and submit again b
 - **Checkmarks reset when a refinement is applied.** Ids are positional, so after the AI restructures the recipe, old checkmarks could point at the wrong step. Servings are kept.
 - **Refinement sends the whole recipe back** to the model (fine at this size; could use a JSON-patch style edit for larger docs).
 - **Quantities are only as good as the model's.** Unit conversion (cups ↔ grams) isn't attempted, and "to taste" items don't scale.
+- **Free-tier Gemini is sometimes overloaded.** The fallback model absorbs most of this, but if Google's whole Flash family is busy, users see "The AI is very busy right now" and can retry. The real fix is a paid key (Tier 1 is cheap). Using several free keys to multiply quota isn't a fix: limits are per Google Cloud project, and getting around them breaks Google's terms.
 - **Rate limiting is in-memory**, so it resets on restart and isn't shared across multiple instances (fine for one free Render instance; Redis would be needed beyond that).
 - **One photo at a time.** Scan again to add more. Photos aren't kept in saved sessions.
 - **Sessions are per-browser** (localStorage), capped at 20.

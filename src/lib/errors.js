@@ -12,8 +12,10 @@ export class AppError extends Error {
 
 const COPY = {
   NETWORK: { title: "Can't reach the server", hint: 'Check your internet connection, then try again. (Running locally? Make sure `npm start` is still running.)' },
-  TIMEOUT: { title: 'The model took too long', hint: 'It may be busy. Trying again usually works.' },
+  TIMEOUT: { title: 'The AI took too long', hint: 'Its servers may be busy (we already tried a backup model). Trying again usually works.' },
   RATE_LIMITED: { title: 'Too many requests', hint: "You've hit a usage limit. Wait a little and try again." },
+  OVERLOADED: { title: 'The AI is very busy right now', hint: "Google's servers are under heavy demand (we already tried a backup model). Wait a few seconds and try again." },
+  MODEL_NOT_FOUND: { title: 'The server is not set up correctly', hint: 'The configured Gemini model does not exist. Check GEMINI_MODEL.' },
   UPSTREAM_ERROR: { title: 'The AI service had a problem', hint: 'This is usually temporary. Try again.' },
   UPSTREAM_UNREACHABLE: { title: "Can't reach the AI service", hint: 'The server could not connect to Gemini. Try again shortly.' },
   CONFIG: { title: 'The server is not set up correctly', hint: 'Check GEMINI_API_KEY / GEMINI_MODEL in .env and restart.' },
